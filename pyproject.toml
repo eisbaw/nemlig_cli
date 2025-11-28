@@ -1,0 +1,11 @@
+[project]
+name = "nemlig-cli"
+version = "0.1.0"
+description = "CLI for nemlig.com grocery shopping"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+nemlig = "nemlig_cli:main"

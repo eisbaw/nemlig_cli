@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "chromeDevTools": {
+      "type": "stdio",
+      "command": "./chrome-devtools-mcp-wrapper.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}
