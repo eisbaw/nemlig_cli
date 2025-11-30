@@ -1,59 +1,58 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+AI assistant guidance for this repository. See README.md for project overview and workflow documentation.
 
-## Project Overview
-
-CLI tool for interacting with nemlig.com (Danish online grocery store). Single-file Python script using `requests` for HTTP and `argparse` for CLI parsing. Authenticates via a 3-step flow (XSRF token, Bearer token, login) then provides commands for product search, basket management, and order history.
-
-## Development Commands
+## Quick Commands
 
 ```bash
-# Enter dev environment (if shell.nix exists)
-nix-shell
-
-# Run CLI commands via justfile
-just search "cocio"              # Search products
-just details 701025              # Product details
-just basket                      # View basket
-just add 701025 2                # Add product (quantity optional)
-just history                     # Order history
-just history 12345678            # Order details
-
-# Direct execution (requires NEMLIG_USER and NEMLIG_PASS env vars)
-uv run python nemlig_cli.py -u "$NEMLIG_USER" -p "$NEMLIG_PASS" search "milk"
+just search "cocio"     # Search products
+just details 701025     # Product details
+just basket             # View basket
+just add 701025 2       # Add product
+just history            # Order history
 ```
 
-## Architecture
+Requires `NEMLIG_USER` and `NEMLIG_PASS` environment variables.
 
-**Single file design**: All logic in `nemlig_cli.py` (~750 lines)
+## MCP Usage
 
-**Authentication**: `login()` returns `AuthTokens` dataclass holding XSRF token, bearer token, and session. All API functions take `AuthTokens` as first parameter.
+Chrome DevTools MCP is configured via `.mcp.json`. Use for API discovery and debugging.
 
-**API endpoints**:
-- Main site: `https://www.nemlig.com/webapi/*`
-- Search: `https://webapi.prod.knl.nemlig.it/searchgateway/api/*`
+**Critical**: MCP calls return large payloads (>25KB). Always run MCP interactions from a sub-agent to avoid context bloat.
 
-**Key functions**:
-- `login()` - 3-step auth flow
-- `search_products()` - requires `get_page_settings()` for timeslot/timestamp params
-- `get_product_details()` - first searches to get product URL, then fetches via GetAsJson
-- `get_basket()`, `add_to_basket()` - basket operations
-- `get_order_history()`, `get_order_details()` - order history
+**Privacy**: Never record actual personal information (real names, addresses, phone numbers, order IDs). Replace with realistic placeholder values when documenting APIs (e.g., "Anders And", "Vesterbrogade 42", "+4512345678").
 
-**Command handlers**: `cmd_*` functions parse args and call API functions
+Pattern:
+1. Sub-agent navigates, records network traffic, performs action
+2. Sub-agent returns summary (endpoint, headers, body format)
+3. Main context updates documentation or implements code
 
-## API Documentation
+## Diagrams
 
-See `nemlig_api.md` for complete API documentation including:
-- Authentication flow details
-- Search API parameters
-- Basket API requests/responses
-- Order history endpoints
-- Product details via GetAsJson pattern
+Diagrams are stored as `.drawio.svg` files (SVG with embedded draw.io source). Keep them updated when architecture changes.
 
-## Dependencies
+**To edit**: Open `.drawio.svg` directly in draw.io - the source is embedded.
 
-- Python >=3.11
-- `requests` - HTTP client
-- `uv` - package manager (used via justfile)
+**To create/update**:
+```bash
+# Create/edit in draw.io, save as .drawio file, then export:
+drawio -x -f svg --embed-diagram -o diagram.drawio.svg diagram.drawio
+rm diagram.drawio  # Keep only the .svg
+```
+
+Current diagrams:
+- `arch_api.drawio.svg` - API architecture (endpoints, auth flow)
+- `mcp-workflow.drawio.svg` - MCP workflow for API discovery
+
+## Project Commands
+
+Custom slash commands for this project. **Run both in sub-agents in parallel before every commit.**
+
+- `/drawio-updater` - Audit and update `.drawio.svg` diagrams
+- `/privacy-checker` - Scan files for personal data leaks
+
+## Files
+
+- `nemlig_cli.py` - Single-file Python client
+- `nemlig_api.md` - API documentation (source of truth for endpoints)
+- `justfile` - Command shortcuts

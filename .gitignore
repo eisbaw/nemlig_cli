@@ -1,0 +1,23 @@
+# Chrome profile for MCP (large, user-specific)
+.chrome-profile/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# uv
+.python-version
+
+# Editors
+*.swp
+*.swo
+.idea/
+.vscode/
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
