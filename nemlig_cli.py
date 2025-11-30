@@ -3,20 +3,57 @@
 Nemlig.com CLI - A command-line interface for nemlig.com grocery shopping.
 
 Usage:
-    python nemlig_cli.py --username EMAIL --password PASS search "cocio"
-    python nemlig_cli.py --username EMAIL --password PASS details PRODUCT_ID
-    python nemlig_cli.py --username EMAIL --password PASS basket
-    python nemlig_cli.py --username EMAIL --password PASS add PRODUCT_ID [--quantity N]
-    python nemlig_cli.py --username EMAIL --password PASS history [ORDER_ID]
+    python nemlig_cli.py search "cocio"
+    python nemlig_cli.py details PRODUCT_ID
+    python nemlig_cli.py basket
+    python nemlig_cli.py add PRODUCT_ID [--quantity N]
+    python nemlig_cli.py history [ORDER_ID]
+
+Credentials can be provided via ~/.config/nemlig/login.json or CLI options.
+CLI options override the config file.
 """
 
 import argparse
+import json
 import re
 import sys
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
+
+
+CONFIG_FILE = Path.home() / ".config" / "nemlig" / "login.json"
+
+
+def load_config_credentials() -> dict:
+    """
+    Load credentials from ~/.config/nemlig/login.json if it exists.
+
+    Expected format: {"username": "email@example.com", "password": "secret"}
+
+    Returns dict with 'username' and 'password' keys, or empty dict if file doesn't exist.
+
+    Raises:
+        ValueError: If file exists but contains invalid JSON or wrong structure.
+        OSError: If file exists but cannot be read.
+    """
+    if not CONFIG_FILE.exists():
+        return {}
+
+    with open(CONFIG_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Config file {CONFIG_FILE} must contain a JSON object, got {type(data).__name__}"
+        )
+
+    return {
+        "username": data.get("username"),
+        "password": data.get("password"),
+    }
 
 
 BASE_URL = "https://www.nemlig.com"
@@ -676,18 +713,28 @@ def main():
         description="Nemlig.com CLI - Command-line interface for grocery shopping",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Credentials:
+  Credentials are loaded from ~/.config/nemlig/login.json if it exists.
+  CLI options (-u, -p) override the config file values.
+
+  Config file format:
+    {"username": "email@example.com", "password": "secret"}
+
 Examples:
+  %(prog)s search "cocio"
+  %(prog)s details 701025
+  %(prog)s basket
+  %(prog)s add 701025 --quantity 2
+  %(prog)s history
+  %(prog)s history 12345678
+
+  With explicit credentials:
   %(prog)s -u EMAIL -p PASS search "cocio"
-  %(prog)s -u EMAIL -p PASS details 701025
-  %(prog)s -u EMAIL -p PASS basket
-  %(prog)s -u EMAIL -p PASS add 701025 --quantity 2
-  %(prog)s -u EMAIL -p PASS history
-  %(prog)s -u EMAIL -p PASS history 12345678
         """
     )
 
-    parser.add_argument("-u", "--username", required=True, help="Nemlig.com email/username")
-    parser.add_argument("-p", "--password", required=True, help="Nemlig.com password")
+    parser.add_argument("-u", "--username", help="Nemlig.com email/username (overrides config file)")
+    parser.add_argument("-p", "--password", help="Nemlig.com password (overrides config file)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -715,9 +762,40 @@ Examples:
 
     args = parser.parse_args()
 
+    # Load credentials: config file first, CLI overrides
+    try:
+        config_creds = load_config_credentials()
+    except (json.JSONDecodeError, ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    username = args.username or config_creds.get("username")
+    password = args.password or config_creds.get("password")
+
+    if not username or not password:
+        missing = []
+        if not username:
+            missing.append("username")
+        if not password:
+            missing.append("password")
+
+        if CONFIG_FILE.exists() and config_creds:
+            hint = f"Config file {CONFIG_FILE} missing {', '.join(missing)}."
+        elif CONFIG_FILE.exists():
+            hint = f"Config file {CONFIG_FILE} failed to load."
+        else:
+            hint = f"No config file at {CONFIG_FILE}."
+
+        print(
+            f"Error: Missing {' and '.join(missing)}. {hint} "
+            f"Provide via config file or -u/-p options.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         # Authenticate
-        auth = login(args.username, args.password)
+        auth = login(username, password)
 
         # Execute command
         if args.command == "search":
