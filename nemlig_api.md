@@ -368,7 +368,11 @@ Same as Quick Search.
 
 ### Add to Basket
 
-Adds a product to the shopping basket.
+Sets the quantity of a product in the shopping basket.
+
+`quantity` is the **absolute quantity to end up with**, not an amount to add. Posting
+`quantity: 3` for a product already in the basket leaves 3 in the basket, not 4. This is
+also how products are removed — see [Remove from Basket](#remove-from-basket).
 
 #### Request
 
@@ -405,7 +409,7 @@ Referer: https://www.nemlig.com/
 | Field | Type | Description |
 |-------|------|-------------|
 | `ProductId` | string | Product ID (from search results) |
-| `quantity` | number | Quantity to add |
+| `quantity` | number | Absolute quantity the basket should end up with. `0` removes the product |
 | `AffectPartialQuantity` | boolean | For partial quantity items |
 | `disableQuantityValidation` | boolean | Skip quantity validation |
 
@@ -443,6 +447,62 @@ Returns the full basket with all items:
   "Recipes": []
 }
 ```
+
+---
+
+### Remove from Basket
+
+There is no `RemoveFromBasket` endpoint. Removal is [Add to Basket](#add-to-basket) with
+`quantity` set to `0`, which drops the product's line from the basket entirely.
+
+The website works the same way: the basket stepper and its delete button both call
+`AddToBasket`, passing the quantity the line should end up with. Stepping down to `0`
+is what removes the product.
+
+#### Request
+
+```http
+POST https://www.nemlig.com/webapi/basket/AddToBasket
+Content-Type: application/json
+```
+
+Headers are the same as Add to Basket.
+
+#### Request Body
+
+```json
+{
+  "ProductId": "701025",
+  "quantity": 0,
+  "AffectPartialQuantity": false,
+  "disableQuantityValidation": false
+}
+```
+
+#### Response (Success - 200)
+
+Returns the full basket, same shape as Add to Basket, with the product's line gone. Removing
+the last item yields an empty basket:
+
+```json
+{
+  "BasketGuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "Lines": [],
+  "NumberOfProducts": 0,
+  "TotalProductsPrice": 0,
+  "ValidationFailures": [],
+  "Recipes": []
+}
+```
+
+Removing a product that is not in the basket also returns `200` with the basket unchanged,
+so the call is idempotent.
+
+#### Notes
+
+- This applies to product lines. Meal boxes are removed via their own endpoint
+  (`/webapi/basket/RemoveMealBox`); recipes are handled separately again.
+- The CLI exposes this through the existing `add` command: `nemlig_cli.py add <id> --quantity 0`.
 
 ---
 

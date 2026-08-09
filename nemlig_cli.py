@@ -585,7 +585,11 @@ def get_basket(auth: AuthTokens) -> dict:
 
 
 def add_to_basket(auth: AuthTokens, product_id: str, quantity: int = 1) -> dict:
-    """Add a product to the basket."""
+    """Set the quantity of a product in the basket.
+
+    `quantity` is the absolute quantity to end up with, not a delta to add. Passing 0
+    removes the product; there is no separate remove endpoint.
+    """
     headers = get_common_headers()
     headers["Authorization"] = f"Bearer {auth.bearer_token}"
     headers["X-XSRF-TOKEN"] = auth.xsrf_token
@@ -1014,7 +1018,10 @@ def cmd_add(auth: AuthTokens, args: argparse.Namespace) -> int:
     product_id = args.product_id
     quantity = args.quantity
 
-    print(f"Adding product {product_id} (quantity: {quantity}) to basket...", file=sys.stderr)
+    if quantity == 0:
+        print(f"Removing product {product_id} from basket...", file=sys.stderr)
+    else:
+        print(f"Adding product {product_id} (quantity: {quantity}) to basket...", file=sys.stderr)
 
     result = add_to_basket(auth, product_id, quantity)
 
@@ -1026,7 +1033,10 @@ def cmd_add(auth: AuthTokens, args: argparse.Namespace) -> int:
             added_line = line
             break
 
-    if added_line:
+    if quantity == 0:
+        # Quantity 0 removes the product, so it is absent from the returned basket.
+        print(f"\nProduct {product_id} removed from basket.")
+    elif added_line:
         print("\nAdded to basket:")
         print(format_basket_line(added_line))
     else:
@@ -2604,9 +2614,15 @@ Examples:
     subparsers.add_parser("basket", help="Show current basket")
 
     # Add command
-    add_parser = subparsers.add_parser("add", help="Add product to basket")
+    add_parser = subparsers.add_parser("add", help="Set product quantity in basket")
     add_parser.add_argument("product_id", help="Product ID to add")
-    add_parser.add_argument("-q", "--quantity", type=int, default=1, help="Quantity (default: 1)")
+    add_parser.add_argument(
+        "-q",
+        "--quantity",
+        type=int,
+        default=1,
+        help="Quantity to end up with, not to add (default: 1). Use 0 to remove the product",
+    )
 
     # History command
     history_parser = subparsers.add_parser("history", help="Show order history")
