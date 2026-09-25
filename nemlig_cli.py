@@ -10,20 +10,28 @@ Usage:
     python nemlig_cli.py add PRODUCT_ID [--quantity N]
     python nemlig_cli.py history [ORDER_ID]
 
-Credentials can be provided via ~/.config/nemlig/login.json or CLI options.
-CLI options override the config file.
+The username can be provided via config, NEMLIG_USER, or -u.
+Passwords are prompted without echo and are never loaded from disk or arguments.
 """
 
 import argparse
+import getpass
+from importlib import metadata
 import itertools
 import json
 import os
 import re
-import readline
+try:
+    import readline
+except ImportError:
+    readline = None  # Optional tab completion; unavailable on standard Windows Python.
 import sys
+import subprocess
 import threading
 import time
+import tomllib
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,7 +175,29 @@ class Spinner:
         self.stop()
 
 
-VERSION = "1.0.0"
+def development_version() -> str:
+    """Use the project version and identify the exact local Git revision."""
+    root = Path(__file__).resolve().parent
+    try:
+        with (root / "pyproject.toml").open("rb") as source:
+            version = tomllib.load(source)["project"]["version"]
+    except FileNotFoundError:
+        # A wheel's module directory need not contain the source pyproject.
+        return f"{metadata.version('nemlig-cli')}+unknown"
+    # This caller owns the child: check_output waits/reaps it and kills/reaps it
+    # on timeout. Abrupt parent death can briefly orphan this finite read-only
+    # Git query; it finishes independently, with no retry or persistent effects.
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root,
+            stderr=subprocess.DEVNULL, text=True, timeout=5,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return f"{version}+unknown"
+    return f"{version}+g{revision}"
+
+
+VERSION = development_version()
 
 LOGO = r"""
     ░░░    ░░░  ░░░░░░░  ░░░    ░░░  ░░░      ░░░   ░░░░░░░
@@ -206,9 +236,9 @@ def load_config_credentials() -> dict:
     """
     Load credentials from ~/.config/nemlig/login.json if it exists.
 
-    Expected format: {"username": "email@example.com", "password": "secret"}
+    Expected format: {"username": "user@example.com"}
 
-    Returns dict with 'username' and 'password' keys, or empty dict if file doesn't exist.
+    Returns non-password settings, or an empty dict if the file doesn't exist.
 
     Raises:
         ValueError: If file exists but contains invalid JSON or wrong structure.
@@ -225,11 +255,30 @@ def load_config_credentials() -> dict:
             f"Config file {CONFIG_FILE} must contain a JSON object, got {type(data).__name__}"
         )
 
+    if "password" in data:
+        raise ValueError(
+            "Remove the password field from login.json; passwords are now prompted securely."
+        )
+
     return {
         "username": data.get("username"),
-        "password": data.get("password"),
         "anthropic_api_key": data.get("anthropic_api_key"),
     }
+
+
+def read_password() -> str:
+    """Fail closed instead of falling back to visible or piped password input."""
+    if not sys.stdin.isatty():
+        raise ValueError("Password entry requires an interactive terminal.")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            password = getpass.getpass("Nemlig.com password: ")
+        except getpass.GetPassWarning:
+            raise ValueError("Hidden password entry is unavailable in this terminal.") from None
+    if not password:
+        raise ValueError("Password must not be empty.")
+    return password
 
 
 def get_anthropic_api_key() -> str | None:
@@ -423,6 +472,26 @@ def get_common_headers() -> dict:
     }
 
 
+def login_http_error(error: requests.exceptions.HTTPError, stage: str) -> str:
+    """Report only our stage labels and recognized numeric server categories."""
+    response = error.response
+    status = response.status_code if response is not None else "unknown"
+    category = "unclassified response"
+    if response is not None:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        code = body.get("ErrorCode") if isinstance(body, dict) else None
+        # Categories used by the website's login handler; never echo server text.
+        categories = {0: "missing argument", 3: "invalid format",
+                      4: "unauthorized access", 5: "validation error",
+                      10: "account not activated", 11: "member not found"}
+        if type(code) is int and code in categories:
+            category = f"{categories[code]} (code {code})"
+    return f"Login failed while {stage}: HTTP {status}; {category}."
+
+
 def login(username: str, password: str) -> AuthTokens:
     """
     Authenticate with Nemlig.com using the 3-step login flow.
@@ -437,6 +506,7 @@ def login(username: str, password: str) -> AuthTokens:
     spinner = Spinner("Connecting to nemlig.com")
     spinner.start()
 
+    stage = "requesting login protection"
     try:
         # Step 1: Get XSRF token
         resp = session.get(f"{BASE_URL}/webapi/AntiForgery", headers=headers)
@@ -445,6 +515,7 @@ def login(username: str, password: str) -> AuthTokens:
         xsrf_token = xsrf_data["Value"]
 
         # Step 2: Get Bearer token
+        stage = "requesting an access token"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         resp = session.get(f"{BASE_URL}/webapi/Token", headers=headers)
         resp.raise_for_status()
@@ -452,6 +523,7 @@ def login(username: str, password: str) -> AuthTokens:
         bearer_token = token_data["access_token"]
 
         # Step 3: Login
+        stage = "submitting the login"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         headers["X-XSRF-TOKEN"] = xsrf_token
         headers["Authorization"] = f"Bearer {bearer_token}"
@@ -471,9 +543,10 @@ def login(username: str, password: str) -> AuthTokens:
         login_result = resp.json()
 
         if "RedirectUrl" not in login_result:
-            raise Exception(f"Login failed: {login_result}")
+            raise RuntimeError("Login rejected by nemlig.com.")
 
         # Get fresh tokens after login
+        stage = "refreshing the access token after login"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         resp = session.get(f"{BASE_URL}/webapi/Token", headers=headers)
         resp.raise_for_status()
@@ -481,10 +554,14 @@ def login(username: str, password: str) -> AuthTokens:
         bearer_token = token_data["access_token"]
 
         # Get fresh XSRF token
+        stage = "refreshing login protection after login"
         resp = session.get(f"{BASE_URL}/webapi/AntiForgery", headers=headers)
         resp.raise_for_status()
         xsrf_data = resp.json()
         xsrf_token = xsrf_data["Value"]
+    except requests.exceptions.HTTPError as error:
+        spinner.stop()
+        raise RuntimeError(login_http_error(error, stage)) from None
     except BaseException:
         spinner.stop()
         raise
@@ -1541,7 +1618,7 @@ def meal_plan_chat(auth: AuthTokens) -> int:
     if not api_key:
         print("\n  Error: ANTHROPIC_API_KEY not found.")
         print("  Set it in ~/.config/nemlig/login.json or as environment variable.")
-        print('  Example: {"username": "...", "password": "...", "anthropic_api_key": "sk-ant-..."}')
+        print('  Example: {"username": "user@example.com", "anthropic_api_key": "sk-ant-..."}')
         return 1
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -2322,15 +2399,16 @@ def interactive_mode(auth: AuthTokens, username: str) -> int:
     print_welcome(username)
 
     # Set up tab completion
-    completer = NemligCompleter()
-    readline.set_completer(completer.complete)
-    readline.set_completer_delims(" ")
+    if readline is not None:
+        completer = NemligCompleter()
+        readline.set_completer(completer.complete)
+        readline.set_completer_delims(" ")
 
-    # macOS uses libedit which needs different binding syntax
-    if readline.__doc__ and "libedit" in readline.__doc__:
-        readline.parse_and_bind("bind ^I rl_complete")
-    else:
-        readline.parse_and_bind("tab: complete")
+        # macOS uses libedit which needs different binding syntax
+        if readline.__doc__ and "libedit" in readline.__doc__:
+            readline.parse_and_bind("bind ^I rl_complete")
+        else:
+            readline.parse_and_bind("tab: complete")
 
     # Show quick help
     print("    Commands: search <query> | list | plan | basket | help | quit\n")
@@ -2575,16 +2653,30 @@ def interactive_mode(auth: AuthTokens, username: str) -> int:
 
 
 def main():
+    # Windows terminals and redirected files may use a legacy code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+    # Do not let argparse echo a rejected password argument into logs.
+    if any(arg.startswith("-p") or (
+            arg.startswith("--") and len(arg.partition("=")[0]) > 2
+            and "--password".startswith(arg.partition("=")[0]))
+           for arg in sys.argv[1:]):
+        print("Password arguments are disabled; use the hidden terminal prompt.", file=sys.stderr)
+        return 1
+
     parser = argparse.ArgumentParser(
         description=LOGO.format(version=VERSION),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
         epilog="""
 Credentials:
-  Credentials are loaded from ~/.config/nemlig/login.json if it exists.
-  CLI options (-u, -p) override the config file values.
+  Username: -u, NEMLIG_USER, or ~/.config/nemlig/login.json.
+  Password: hidden interactive prompt; never saved.
 
   Config file format:
-    {"username": "email@example.com", "password": "secret"}
+    {"username": "user@example.com"}
 
 Examples:
   %(prog)s search "cocio"
@@ -2597,7 +2689,6 @@ Examples:
 
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {VERSION}")
     parser.add_argument("-u", "--username", help="Nemlig.com email/username (overrides config file)")
-    parser.add_argument("-p", "--password", help="Nemlig.com password (overrides config file)")
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
@@ -2710,33 +2801,22 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    username = args.username or config_creds.get("username")
-    password = args.password or config_creds.get("password")
+    username = args.username or os.environ.get("NEMLIG_USER") or config_creds.get("username")
 
-    if not username or not password:
-        missing = []
-        if not username:
-            missing.append("username")
-        if not password:
-            missing.append("password")
-
-        if CONFIG_FILE.exists() and config_creds:
-            hint = f"Config file {CONFIG_FILE} missing {', '.join(missing)}."
-        elif CONFIG_FILE.exists():
-            hint = f"Config file {CONFIG_FILE} failed to load."
-        else:
-            hint = f"No config file at {CONFIG_FILE}."
-
+    if not username:
         print(
-            f"Error: Missing {' and '.join(missing)}. {hint} "
-            f"Provide via config file or -u/-p options.",
+            "Error: Provide your username with -u, NEMLIG_USER, or login.json.",
             file=sys.stderr,
         )
         return 1
 
     try:
         # Authenticate
-        auth = login(username, password)
+        password = read_password()
+        try:
+            auth = login(username, password)
+        finally:
+            del password
 
         # Interactive mode if no command given
         if args.command is None:
@@ -2777,9 +2857,11 @@ Examples:
             return 1
 
     except requests.exceptions.HTTPError as e:
-        print(f"HTTP Error: {e}", file=sys.stderr)
-        if e.response is not None:
-            print(f"Response: {e.response.text}", file=sys.stderr)
+        status = e.response.status_code if e.response is not None else "unknown"
+        print(f"HTTP Error: {status}", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("Login or operation cancelled.", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

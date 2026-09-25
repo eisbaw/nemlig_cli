@@ -393,7 +393,7 @@ wheels = [
 
 [[package]]
 name = "nemlig-cli"
-version = "0.1.0"
+version = "0.2.0.dev2"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },

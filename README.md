@@ -11,18 +11,17 @@ Command-line interface for [nemlig.com](https://www.nemlig.com) Danish online gr
 ## Requirements
 
 - Python >= 3.11
-- [uv](https://github.com/astral-sh/uv) package manager
+- [uv](https://github.com/astral-sh/uv) or Python's built-in venv and pip
 - Credentials for nemlig.com account
 
 ```bash
-# Set credentials as environment variables
-export NEMLIG_USER="your@email.com"
-export NEMLIG_PASS="yourpassword"
+# Only the username belongs in environment variables
+export NEMLIG_USER="user@example.com"
 ```
 
 ### Optional features
 
-Search, basket and order history need nothing beyond `requests`. The remaining
+Search, basket and order history use `requests` and `argcomplete`. The remaining
 features pull in heavier dependencies and are installed as extras:
 
 | Extra | Enables | Commands |
@@ -53,8 +52,55 @@ just history 12345678            # Order details
 Direct execution:
 
 ```bash
-uv run python nemlig_cli.py -u "$NEMLIG_USER" -p "$NEMLIG_PASS" search "milk"
+uv run python nemlig_cli.py -u "$NEMLIG_USER" search "milk"
 ```
+
+The password is requested through a hidden terminal prompt. Use the interactive
+mode (`python nemlig_cli.py -u user@example.com`) to reuse the login in memory
+for several commands. Exiting discards the local session; no password or session
+file is written. This does not revoke the session at the server.
+
+### Windows 11 (PowerShell)
+
+From the checkout, with Python 3.11 or newer installed:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install "requests>=2.31.0" "argcomplete>=3.0.0"
+.\.venv\Scripts\python.exe nemlig_cli.py --help
+.\.venv\Scripts\python.exe nemlig_cli.py -u user@example.com
+```
+
+Choose your installed Python version in the first command. No activation script,
+Bash, `just`, or Windows readline package is required. Tab completion is enabled
+only when `readline` is available. Unsupported display characters are replaced
+instead of crashing a legacy Windows terminal. AI, Sheets, and camera features
+are optional and are not needed for shopping lists.
+
+### Local security change — development toward 0.2.0
+
+This branch is a local development build, not a published release. `--version`
+reads the canonical project version and appends the checkout's short Git SHA.
+
+**Incompatible login change:** `-p` / `--password` and passwords in `login.json`
+are no longer accepted. `NEMLIG_PASS` is not used. Remove legacy password fields
+and password environment settings yourself; the CLI does not migrate or delete
+them. A username-only config remains supported. Password entry requires an
+interactive terminal and fails if hidden input is unavailable.
+
+The `just` helpers pass values as shell arguments rather than inserting them
+into shell source. Login rejection and HTTP errors do not print server bodies.
+This change does not harden the optional AI/Google integrations or protect
+against software that can already read the process's memory. AI features send
+their prompts and tool results to Anthropic; Google tokens retain the upstream
+storage behavior.
+
+Run the focused regression tests with `python -m unittest discover -s tests -v`.
+
+Login HTTP errors identify which step failed and, when recognized, a numeric
+server error category. Response bodies, account identifiers, tokens and
+passwords are never included in that diagnostic. An HTTP 400 alone does not
+establish whether the cause is credentials, account state or request validation.
 
 ## Architecture
 
