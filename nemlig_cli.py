@@ -472,6 +472,26 @@ def get_common_headers() -> dict:
     }
 
 
+def login_http_error(error: requests.exceptions.HTTPError, stage: str) -> str:
+    """Report only our stage labels and recognized numeric server categories."""
+    response = error.response
+    status = response.status_code if response is not None else "unknown"
+    category = "unclassified response"
+    if response is not None:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        code = body.get("ErrorCode") if isinstance(body, dict) else None
+        # Categories used by the website's login handler; never echo server text.
+        categories = {0: "missing argument", 3: "invalid format",
+                      4: "unauthorized access", 5: "validation error",
+                      10: "account not activated", 11: "member not found"}
+        if type(code) is int and code in categories:
+            category = f"{categories[code]} (code {code})"
+    return f"Login failed while {stage}: HTTP {status}; {category}."
+
+
 def login(username: str, password: str) -> AuthTokens:
     """
     Authenticate with Nemlig.com using the 3-step login flow.
@@ -486,6 +506,7 @@ def login(username: str, password: str) -> AuthTokens:
     spinner = Spinner("Connecting to nemlig.com")
     spinner.start()
 
+    stage = "requesting login protection"
     try:
         # Step 1: Get XSRF token
         resp = session.get(f"{BASE_URL}/webapi/AntiForgery", headers=headers)
@@ -494,6 +515,7 @@ def login(username: str, password: str) -> AuthTokens:
         xsrf_token = xsrf_data["Value"]
 
         # Step 2: Get Bearer token
+        stage = "requesting an access token"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         resp = session.get(f"{BASE_URL}/webapi/Token", headers=headers)
         resp.raise_for_status()
@@ -501,6 +523,7 @@ def login(username: str, password: str) -> AuthTokens:
         bearer_token = token_data["access_token"]
 
         # Step 3: Login
+        stage = "submitting the login"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         headers["X-XSRF-TOKEN"] = xsrf_token
         headers["Authorization"] = f"Bearer {bearer_token}"
@@ -523,6 +546,7 @@ def login(username: str, password: str) -> AuthTokens:
             raise RuntimeError("Login rejected by nemlig.com.")
 
         # Get fresh tokens after login
+        stage = "refreshing the access token after login"
         headers["X-Correlation-Id"] = str(uuid.uuid4())
         resp = session.get(f"{BASE_URL}/webapi/Token", headers=headers)
         resp.raise_for_status()
@@ -530,10 +554,14 @@ def login(username: str, password: str) -> AuthTokens:
         bearer_token = token_data["access_token"]
 
         # Get fresh XSRF token
+        stage = "refreshing login protection after login"
         resp = session.get(f"{BASE_URL}/webapi/AntiForgery", headers=headers)
         resp.raise_for_status()
         xsrf_data = resp.json()
         xsrf_token = xsrf_data["Value"]
+    except requests.exceptions.HTTPError as error:
+        spinner.stop()
+        raise RuntimeError(login_http_error(error, stage)) from None
     except BaseException:
         spinner.stop()
         raise

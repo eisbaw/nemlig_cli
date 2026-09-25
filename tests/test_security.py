@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import warnings
 
 import nemlig_cli as cli
@@ -140,6 +140,56 @@ class SecurityTests(unittest.TestCase):
                 patch.object(cli.subprocess, "check_output") as git:
             self.assertEqual(cli.development_version(), "0.2.0.dev1+unknown")
             git.assert_not_called()
+
+    def test_login_http_categories_never_echo_server_content(self):
+        for body in ({"ErrorCode": 4, "ErrorMessage": "synthetic-private-body"},
+                     {"ErrorCode": "synthetic-private-body"},
+                     {"ErrorCode": True}, ["synthetic-private-body"], None):
+            response = cli.requests.Response()
+            response.status_code = 400
+            response._content = json.dumps(body).encode()
+            error = cli.requests.HTTPError("synthetic-private-url", response=response)
+            message = cli.login_http_error(error, "submitting the login")
+            self.assertIn("HTTP 400", message)
+            self.assertNotIn("synthetic-private", message)
+            if isinstance(body, dict) and type(body.get("ErrorCode")) is int:
+                self.assertIn("unauthorized access (code 4)", message)
+            else:
+                self.assertIn("unclassified response", message)
+
+    def test_login_html_error_is_safe(self):
+        response = cli.requests.Response()
+        response.status_code = 400
+        response._content = b'<html>synthetic-private-body</html>'
+        error = cli.requests.HTTPError(response=response)
+        self.assertEqual(cli.login_http_error(error, "requesting login protection"),
+                         "Login failed while requesting login protection: HTTP 400; unclassified response.")
+
+    def test_login_failure_identifies_each_stage_without_retry(self):
+        stages = ["requesting login protection", "requesting an access token",
+                  "submitting the login", "refreshing the access token after login",
+                  "refreshing login protection after login"]
+        success_bodies = [{"Value": "synthetic-xsrf"}, {"access_token": "synthetic-token"},
+                          {"RedirectUrl": "/"}, {"access_token": "synthetic-token"},
+                          {"Value": "synthetic-xsrf"}]
+        for failed_index, stage in enumerate(stages):
+            responses = []
+            for index in range(failed_index + 1):
+                response = cli.requests.Response()
+                response.status_code = 400 if index == failed_index else 200
+                body = {"ErrorCode": 4, "ErrorMessage": "synthetic-private-body"} \
+                    if index == failed_index else success_bodies[index]
+                response._content = json.dumps(body).encode()
+                responses.append(response)
+            request = Mock(side_effect=responses)
+            session = Mock(get=request, post=request)
+            with self.subTest(stage=stage), patch.object(cli.requests, "Session", return_value=session):
+                with self.assertRaises(RuntimeError) as raised:
+                    cli.login("user@example.com", "synthetic-secret")
+                self.assertIn(stage, str(raised.exception))
+                self.assertNotIn("synthetic-private", str(raised.exception))
+                self.assertNotIn("synthetic-secret", str(raised.exception))
+                self.assertEqual(request.call_count, failed_index + 1)
 
 
 if __name__ == "__main__":

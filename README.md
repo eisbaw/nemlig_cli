@@ -97,6 +97,11 @@ storage behavior.
 
 Run the focused regression tests with `python -m unittest discover -s tests -v`.
 
+Login HTTP errors identify which step failed and, when recognized, a numeric
+server error category. Response bodies, account identifiers, tokens and
+passwords are never included in that diagnostic. An HTTP 400 alone does not
+establish whether the cause is credentials, account state or request validation.
+
 ## Architecture
 
 **Single file design**: All logic in `nemlig_cli.py` - a straightforward requests-based client.
