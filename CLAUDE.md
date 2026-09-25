@@ -12,7 +12,9 @@ just add 701025 2       # Add product
 just history            # Order history
 ```
 
-Requires `NEMLIG_USER` and `NEMLIG_PASS` environment variables.
+Set `NEMLIG_USER` or pass `-u`. The password is entered at the hidden terminal
+prompt; never pass it as an argument or store it in config. On Windows, use
+Python directly as documented in README.md; readline tab completion is optional.
 
 ## MCP Usage
 
